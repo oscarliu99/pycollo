@@ -28,14 +28,14 @@ __all__ = []
 import numpy as np
 import scipy.interpolate as interpolate
 from pyproprop import Options
+import sympy as sym
 
 
 GAUSS = "gauss"
 LOBATTO = "lobatto"
 RADAU = "radau"
-QUADRATURES = Options((GAUSS, LOBATTO, RADAU), default=LOBATTO,
-                      unsupported=GAUSS)
-DEFAULT_COLLOCATION_POINTS_MIN = 4
+QUADRATURES = Options((GAUSS, LOBATTO, RADAU), default=LOBATTO)
+DEFAULT_COLLOCATION_POINTS_MIN = 5
 DEFAULT_COLLOCATION_POINTS_MAX = 10
 
 
@@ -115,51 +115,34 @@ class Quadrature:
     def A_index_array(self, order):
         return self._retrive_or_generate_dict_value(self._A_index_arrays, order)
 
-    def radau_generator(self, order):
-        coefficients = [0] * (order - 2)
-        coefficients.extend([1, 1])
+    def gauss_generator(self,order):
+        coefficients = [0] * (order-2)
+        coefficients.extend([1])
         legendre_polynomial = np.polynomial.legendre.Legendre(coefficients)
         self._polynomials.update({order: legendre_polynomial})
 
-        radau_points = legendre_polynomial.roots()
-        radau_points = np.concatenate([radau_points, np.array([0])])
-        self._quadrature_points.update({order: radau_points})
+        gauss_points,gauss_weights = np.polynomial.legendre.leggauss(order-2)
+        gauss_points = np.array([-1]+list(gauss_points)+[1])
+        self._quadrature_points.update({order: gauss_points})
+        gauss_weights = np.array([0]+list(gauss_weights)+[0])/2
+        self._quadrature_weights.update({order: gauss_weights})
 
-        coefficients = [0] * (order - 2)
-        coefficients.extend([1])
-        legendre_polynomial = np.polynomial.legendre.Legendre(coefficients)
-        radau_weights = [2 / (order - 1)**2]
-        radau_weights = np.array(
-            radau_weights + [(1 - x) / ((order - 1)**2 * (legendre_polynomial(x)**2))
-                             for x in radau_points[1:-1]])
-        radau_weights = np.concatenate([radau_weights, np.array([0])])
-        self._quadrature_weights.update({order: radau_weights})
-
-        butcher_points = self.quadrature_point(order, domain=[0, 1])
         butcher_array = np.zeros((order, order))
-        butcher_array[-1, :] = radau_weights / 2
-        if order > 2:
-            A_row = (order + 1) * (order - 2)
-            A_col = order * (order - 2)
-            A = np.zeros((A_row, A_col))
-            b = np.zeros(A_row)
-            for k in range(order - 2):
-                for j in range(order):
-                    row = j + k * order
-                    for i in range(order - 2):
-                        col = i + j * (order - 2)
-                        A[row, col] = radau_weights[i + 1] * \
-                            butcher_points[i + 1]**k
-                    b[row] = (radau_weights[j] / (k + 1)) * (1 - butcher_points[j]
-                                                             ** (k + 1)) - radau_weights[-1] * radau_weights[j]
-            del_row = []
-            for i, row in enumerate(A):
-                if np.count_nonzero(row) == 0:
-                    del_row.append(i)
-            A = np.delete(A, del_row, axis=0)
-            b = np.delete(b, del_row, axis=0)
-            a = np.linalg.solve(A, b)
-            butcher_array[1:-1, :] = a.reshape(order - 2, -1, order='F')
+        butcher_points = self.quadrature_point(order, domain=[0, 1])[:-1]
+        x = sym.Symbol('x')
+        differential_matrix = []
+        for i in range(len(butcher_points)):
+            tem = 0
+            for j in range(len(butcher_points)):
+                if j != i:
+                    tem1 = 1/(butcher_points[i]-butcher_points[j])
+                    for k in range(len(butcher_points)):
+                        if k!=j and k!=i:
+                            tem1*= (x-butcher_points[k])/(butcher_points[i]-butcher_points[k])
+                    tem += tem1
+            differential_matrix.append(np.array([tem.subs(x,k) for k in butcher_points[1:]]))
+        differential_matrix = np.array(differential_matrix).transpose()
+        butcher_array[1:,1:-1] = np.vstack((np.linalg.inv(np.array(differential_matrix[:,1:],dtype='float64')),gauss_weights[1:-1]))
         self._butcher_arrays.update({order: butcher_array})
 
         D_left = np.ones((order - 1, 1), dtype=int)
@@ -181,6 +164,62 @@ class Quadrature:
         D_index_array.sort()
         self._D_index_arrays.update({order: D_index_array})
 
+    def radau_generator(self, order):
+        coefficients = [0] * (order - 2)
+        coefficients.extend([1, 1])
+        legendre_polynomial = np.polynomial.legendre.Legendre(coefficients)
+        self._polynomials.update({order: legendre_polynomial})
+
+        radau_points = legendre_polynomial.roots()
+        radau_points = np.append(radau_points,1)
+        self._quadrature_points.update({order: radau_points})
+
+        coefficients = [0] * (order - 2)
+        coefficients.extend([1])
+        legendre_polynomial = np.polynomial.legendre.Legendre(coefficients)
+        radau_weights = [2 / (order - 1)**2]
+        radau_weights = np.array(radau_weights + [(1-x)/((order-1)**2 * (legendre_polynomial(x)**2)) for x in radau_points[1:]])/2
+        self._quadrature_weights.update({order: radau_weights})
+
+        butcher_array = np.zeros((order, order))
+        butcher_points = self.quadrature_point(order, domain=[0, 1])
+        x = sym.Symbol('x')
+        differential_matrix = []
+        for i in range(len(butcher_points)):
+            tem = 0
+            for j in range(len(butcher_points)):
+                if j != i:
+                    tem1 = 1/(butcher_points[i]-butcher_points[j])
+                    for k in range(order):
+                        if k!=j and k!=i:
+                            tem1*= (x-butcher_points[k])/(butcher_points[i]-butcher_points[k])
+                    tem += tem1
+            differential_matrix.append(np.array([tem.subs(x,k) for k in butcher_points[:-1]]))
+        differential_matrix = np.array(differential_matrix).transpose()
+        butcher_array[1:,:-1] = np.linalg.inv(np.array(differential_matrix[:,1:],dtype='float64'))
+
+        self._butcher_arrays.update({order: butcher_array})
+
+        D_left = np.ones((order - 1, 1), dtype=int)
+        D_right = np.diag(-1 * np.ones((order - 1, ), dtype=int))
+        D_matrix = np.hstack([D_left, D_right])
+        self._D_matrices.update({order: D_matrix})
+
+        A_matrix = self.butcher_array(order)[1:, :]
+        self._A_matrices.update({order: A_matrix})
+
+        A_index_array = np.array(range(A_matrix.size), dtype=int)
+        self._A_index_arrays.update({order: A_index_array})
+
+        D_num_row, D_num_col = D_matrix.shape
+        D_rows = np.array(range(D_num_row), dtype=int)
+        D_left = D_rows * D_num_col
+        D_right = D_rows * (D_num_col + 1) + 1
+        D_index_array = np.concatenate((D_left, D_right))
+        D_index_array.sort()
+        self._D_index_arrays.update({order: D_index_array})
+
+
         # print(f'x: {radau_points}')
         # print(f'w: {radau_weights}, {sum(radau_weights)}')
         # print(f"a: {butcher_array}")
@@ -189,21 +228,27 @@ class Quadrature:
         # input()
 
     def lobatto_generator(self, order):
+        # LGL is by default one order lower
         num_interior_points = order - 1
+        
         coefficients = [0] * (num_interior_points)
         coefficients.append(1)
+        # Legendre coefficients in order of increasing degree, i.e., (1, 2, 3) gives 1*P_0(x) + 2*P_1(x) + 3*P_2(x).
         legendre_polynomial = np.polynomial.legendre.Legendre(coefficients)
         self._polynomials.update({order: legendre_polynomial})
 
+        # Lobatto points Roots obtained from derivative of P_N−1(τ) together with the points −1 and 1
         lobatto_points = legendre_polynomial.deriv().roots()
         lobatto_points = np.insert(lobatto_points, 0, -1, axis=0)
         lobatto_points = np.append(lobatto_points, 1)
         self._quadrature_points.update({order: lobatto_points})
 
+        # Weight_j = 2/(N*(N-1))*(1/L_N(j))
         lobatto_weights = np.array(
             [1 / (order * (order - 1) * (legendre_polynomial(x)**2)) for x in lobatto_points])
         self._quadrature_weights.update({order: lobatto_weights})
 
+        # Stretched quadrature points from [-1,1] to [0,1]
         butcher_points = self.quadrature_point(order, domain=[0, 1])
         # print(f'x\': {butcher_points}')
         butcher_array = np.zeros((order, order))
@@ -268,3 +313,6 @@ class Quadrature:
         # print(f"A: {D_matrix}")
         # print(f"I: {A_matrix}")
         # input()
+
+
+

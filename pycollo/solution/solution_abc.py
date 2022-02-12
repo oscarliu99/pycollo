@@ -47,7 +47,7 @@ class SolutionABC(ABC):
         self.set_user_attributes()
         if self.ocp.settings.quadrature_method == "lobatto":
             self.interpolate_solution_lobatto()
-        elif self.ocp.settings.quadrature_method == "radau":
+        elif self.ocp.settings.quadrature_method == "radau" or self.ocp.settings.quadrature_method == "gauss":
             self.interpolate_solution_radau()
 
     @abstractmethod
