@@ -29,7 +29,7 @@ from .utils import casadi_substitute, dict_merge, symbol_name
 from .vis.plot import plot_mesh
 
 
-DEFAULT_MESH_TOLERANCE = 1e-7
+DEFAULT_MESH_TOLERANCE = 1e-6
 DEFAULT_MAX_MESH_ITERATIONS = 10
 PATTERSON_RAO = "patterson-rao"
 chain_from_iter = itertools.chain.from_iterable
@@ -60,6 +60,10 @@ class MeshRefinementABC(ABC):
     def next_iteration_phase_mesh(self):
         pass
 
+    @property
+    def settings(self):
+        return self.backend.ocp.settings
+
 
 class PattersonRaoMeshRefinement(MeshRefinementABC):
 
@@ -67,6 +71,14 @@ class PattersonRaoMeshRefinement(MeshRefinementABC):
         self.absolute_mesh_errors = []
         self.relative_mesh_errors = []
         self.maximum_relative_mesh_errors = []
+
+        # method_memory = str(self.settings.quadrature_method)
+        # if method_memory == 'radau differential':
+        #     self.settings.quadrature_method = 'radau'
+        #     print(self.settings.quadrature_method)
+        # elif method_memory == 'gauss differential':
+        #     self.settings.quadrature_method = 'gauss'
+
         self.ph_mesh = self.create_ph_mesh()
         self.dy_ph_callables = self.generate_dy_ph_callables()
         x_ph, y_ph, u_ph = self.construct_x_ph()
@@ -74,6 +86,7 @@ class PattersonRaoMeshRefinement(MeshRefinementABC):
         for args in zipped:
             self.phase_mesh_error(*args, x_ph)
         self.next_iter_mesh = self.next_iteration_mesh()
+        # self.settings.quadrature_method = method_memory
 
     def create_ph_mesh(self):
         phase_ph_meshes = []
@@ -209,7 +222,29 @@ class PattersonRaoMeshRefinement(MeshRefinementABC):
     def phase_mesh_error(self, p, p_data, y_ph, u_ph, x_ph):
         dy_ph = np.array(self.dy_ph_callables[p.i](x_ph))
         dy_ph = dy_ph.reshape((-1, p.num_y_var), order="F")
-        I_dy_ph = p_data.stretch * self.ph_mesh.sI_matrix[p.i].dot(dy_ph)
+
+        if self.settings.quadrature_method in ['radau differential','gauss differential']:
+            differential_matrix = self.ph_mesh.sA_matrix[p.i].toarray()
+            h_k_array = self.ph_mesh.h_K[p.i]
+            N_k_array = self.ph_mesh.N_K[p.i]
+            row_index = 0
+            column_index = 0
+            full_integral_matrix = np.zeros(differential_matrix.shape)
+            for j in range(len(N_k_array)):
+                sliced_matrix = differential_matrix[row_index:(row_index+N_k_array[j]-1),column_index:column_index+N_k_array[j]]/h_k_array[j]
+                integral_matrix = np.zeros([N_k_array[j]-1,N_k_array[j]])
+                if self.settings.quadrature_method == 'radau differential':
+                    integral_matrix[:,:-1] = -np.linalg.inv(np.array(sliced_matrix[:, 1:], dtype='float64'))
+                elif self.settings.quadrature_method == 'gauss differential':
+                    w_matrix = self.ph_mesh.W_matrix[p.i][column_index:column_index+N_k_array[j]]
+                    sliced_matrix = sliced_matrix[:-1, :-1]
+                    integral_matrix[:,1:-1]= np.vstack((np.linalg.inv(np.array(-sliced_matrix[:, 1:], dtype='float64')), w_matrix[1:-1]))
+                full_integral_matrix[row_index:(row_index+N_k_array[j]-1),column_index:column_index+N_k_array[j]] = integral_matrix
+                row_index += (N_k_array[j]-1)
+                column_index += (N_k_array[j]-1)
+            I_dy_ph = p_data.stretch * full_integral_matrix.dot(dy_ph)
+        else:
+            I_dy_ph = p_data.stretch * self.ph_mesh.sI_matrix[p.i].dot(dy_ph)
         dim_1 = self.it.mesh.K[p.i]
         dim_2 = p.num_y_var
         dim_3 = max(self.ph_mesh.N_K[p.i]) - 1

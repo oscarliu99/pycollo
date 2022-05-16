@@ -8,12 +8,13 @@ Industrial and Applied Mathematics, p170 - 171.
 
 import numpy as np
 import sympy as sym
-
+import matplotlib.pyplot as plt
 import pycollo
 
 y, u = sym.symbols("y u")
 
 problem = pycollo.OptimalControlProblem(name="Hypersensitive problem")
+problem.settings.max_mesh_iterations = 1
 phase = problem.new_phase(name="A")
 phase.state_variables = y
 phase.control_variables = u
@@ -36,7 +37,13 @@ phase.guess.integral_variables = np.array([4])
 
 problem.objective_function = phase.integral_variables[0]
 
-problem.settings.display_mesh_result_graph = True
+# problem.settings.display_mesh_result_graph = True
 
 problem.initialise()
 problem.solve()
+
+control_solution = problem.solution.control[0][0]
+print(len(control_solution))
+time_solution = problem.solution.tau[0]
+plt.plot(time_solution, control_solution, marker="x")
+plt.show()

@@ -51,7 +51,7 @@ UNSUPPORTED_NLP_SOLVER = (NLP_SOLVER_SNOPT_KEYWORD,
 DEFAULT_LINEAR_SOLVER = LINEAR_SOLVER_MUMPS_KEYWORD
 UNSUPPORTED_LINEAR_SOLVER = (LINEAR_SOLVER_MA57_KEYWORD, )
 DEFAULT_NLP_TOLERANCE = 1e-10
-DEFAULT_MAX_NLP_ITERATIONS = 2000
+DEFAULT_MAX_NLP_ITERATIONS = 200
 DEFAULT_WARM_START = False
 
 # Derivative level constants
@@ -230,7 +230,7 @@ class Settings():
         type=int,
         cast=True,
         min=2,
-        max=20,
+        max=40,
         at_most="collocation_points_max",
     )
     collocation_points_max = processed_property(
@@ -239,7 +239,7 @@ class Settings():
         type=int,
         cast=True,
         min=2,
-        max=20,
+        max=40,
         at_least="collocation_points_min"
     )
     mesh_tolerance = processed_property(

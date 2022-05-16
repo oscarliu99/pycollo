@@ -26,7 +26,6 @@ __all__ = []
 
 
 import numpy as np
-import scipy.interpolate as interpolate
 from pyproprop import Options
 import sympy as sym
 
@@ -34,8 +33,12 @@ import sympy as sym
 GAUSS = "gauss"
 LOBATTO = "lobatto"
 RADAU = "radau"
-QUADRATURES = Options((GAUSS, LOBATTO, RADAU), default=LOBATTO)
-DEFAULT_COLLOCATION_POINTS_MIN = 5
+RADAU_DIFFERENTIAL = "radau differential"
+GAUSS_DIFFERENTIAL = "gauss differential"
+LOBATTO_DIFFERENTIAL = "lobatto differential"
+QUADRATURES = Options((GAUSS, LOBATTO, RADAU, RADAU_DIFFERENTIAL,
+                      GAUSS_DIFFERENTIAL, LOBATTO_DIFFERENTIAL), default=LOBATTO)
+DEFAULT_COLLOCATION_POINTS_MIN = 4
 DEFAULT_COLLOCATION_POINTS_MAX = 10
 
 
@@ -73,6 +76,12 @@ class Quadrature:
             self.quadrature_generator = self.radau_generator
         elif self.settings.quadrature_method == GAUSS:
             self.quadrature_generator = self.gauss_generator
+        elif self.settings.quadrature_method == RADAU_DIFFERENTIAL:
+            self.quadrature_generator = self.radau_differential_generator
+        elif self.settings.quadrature_method == GAUSS_DIFFERENTIAL:
+            self.quadrature_generator = self.gauss_differential_generator
+        elif self.settings.quadrature_method == LOBATTO_DIFFERENTIAL:
+            self.quadrature_generator = self.lobatto_differential_generator
 
     def _retrive_or_generate_dict_value(self, quad_dict, order):
         try:
@@ -115,16 +124,16 @@ class Quadrature:
     def A_index_array(self, order):
         return self._retrive_or_generate_dict_value(self._A_index_arrays, order)
 
-    def gauss_generator(self,order):
-        coefficients = [0] * (order-2)
-        coefficients.extend([1])
+    def gauss_generator(self, order):
+        coefficients = [0] * (order-2)+ [1]
         legendre_polynomial = np.polynomial.legendre.Legendre(coefficients)
         self._polynomials.update({order: legendre_polynomial})
 
-        gauss_points,gauss_weights = np.polynomial.legendre.leggauss(order-2)
-        gauss_points = np.array([-1]+list(gauss_points)+[1])
+        interior_points, interior_weights = np.polynomial.legendre.leggauss(order-2)
+        gauss_points = np.concatenate(([-1], interior_points, [1]))
         self._quadrature_points.update({order: gauss_points})
-        gauss_weights = np.array([0]+list(gauss_weights)+[0])/2
+        gauss_weights = np.concatenate(([0], interior_weights, [0])) / 2
+
         self._quadrature_weights.update({order: gauss_weights})
 
         butcher_array = np.zeros((order, order))
@@ -137,12 +146,15 @@ class Quadrature:
                 if j != i:
                     tem1 = 1/(butcher_points[i]-butcher_points[j])
                     for k in range(len(butcher_points)):
-                        if k!=j and k!=i:
-                            tem1*= (x-butcher_points[k])/(butcher_points[i]-butcher_points[k])
+                        if k != j and k != i:
+                            tem1 *= (x-butcher_points[k]) / \
+                                (butcher_points[i]-butcher_points[k])
                     tem += tem1
-            differential_matrix.append(np.array([tem.subs(x,k) for k in butcher_points[1:]]))
+            differential_matrix.append(
+                np.array([tem.subs(x, k) for k in butcher_points[1:]]))
         differential_matrix = np.array(differential_matrix).transpose()
-        butcher_array[1:,1:-1] = np.vstack((np.linalg.inv(np.array(differential_matrix[:,1:],dtype='float64')),gauss_weights[1:-1]))
+        butcher_array[1:, 1:-1] = np.vstack((np.linalg.inv(
+            np.array(differential_matrix[:, 1:], dtype='float64')), gauss_weights[1:-1]))
         self._butcher_arrays.update({order: butcher_array})
 
         D_left = np.ones((order - 1, 1), dtype=int)
@@ -151,6 +163,59 @@ class Quadrature:
         self._D_matrices.update({order: D_matrix})
 
         A_matrix = self.butcher_array(order)[1:, :]
+        self._A_matrices.update({order: A_matrix})
+
+        A_index_array = np.array(range(A_matrix.size), dtype=int)
+        self._A_index_arrays.update({order: A_index_array})
+
+        D_num_row, D_num_col = D_matrix.shape
+        D_rows = np.array(range(D_num_row), dtype=int)
+        D_left = D_rows * D_num_col
+        D_right = D_rows * (D_num_col + 1) + 1
+        D_index_array = np.concatenate((D_left, D_right))
+        D_index_array.sort()
+        self._D_index_arrays.update({order: D_index_array})
+
+    def gauss_differential_generator(self, order):
+        coefficients = [0] * (order-2) + [1]
+        legendre_polynomial = np.polynomial.legendre.Legendre(coefficients)
+        self._polynomials.update({order: legendre_polynomial})
+
+        interior_points, interior_weights = np.polynomial.legendre.leggauss(order-2)
+        gauss_points = np.concatenate(([-1], interior_points, [1]))
+        self._quadrature_points.update({order: gauss_points})
+        gauss_weights = np.concatenate(([0], interior_weights, [0])) / 2
+
+        self._quadrature_weights.update({order: gauss_weights})
+
+        butcher_array = np.zeros((order, order))
+        butcher_points = self.quadrature_point(order, domain=[0, 1])[:-1]
+        x = sym.Symbol('x')
+        differential_matrix = []
+        for i in range(len(butcher_points)):
+            tem = 0
+            for j in range(len(butcher_points)):
+                if j != i:
+                    tem1 = 1/(butcher_points[i]-butcher_points[j])
+                    for k in range(len(butcher_points)):
+                        if k != j and k != i:
+                            tem1 *= (x-butcher_points[k]) / \
+                                (butcher_points[i]-butcher_points[k])
+                    tem += tem1
+            differential_matrix.append(
+                np.array([tem.subs(x, k) for k in butcher_points[1:]]))
+        differential_matrix = np.array(differential_matrix).transpose()
+        butcher_array[1:-1, :-1] = np.negative(differential_matrix)
+        butcher_array[-1, 0], butcher_array[-1, -1] = -1, 1
+        self._butcher_arrays.update({order: butcher_array})
+
+        D_matrix = self.butcher_array(order)[1:, :]
+        self._D_matrices.update({order: D_matrix})
+
+        A_matrix = np.zeros((order-1, order))
+        A_diagonal = np.diag(1 * np.ones((order - 2)))
+        A_matrix[:-1, 1:-1] = A_diagonal
+        A_matrix[-1, :] = np.negative(gauss_weights)
         self._A_matrices.update({order: A_matrix})
 
         A_index_array = np.array(range(A_matrix.size), dtype=int)
@@ -170,15 +235,16 @@ class Quadrature:
         legendre_polynomial = np.polynomial.legendre.Legendre(coefficients)
         self._polynomials.update({order: legendre_polynomial})
 
-        radau_points = legendre_polynomial.roots()
-        radau_points = np.append(radau_points,1)
+        interior_points = legendre_polynomial.roots()
+        radau_points = np.append(interior_points, 1)
         self._quadrature_points.update({order: radau_points})
 
         coefficients = [0] * (order - 2)
         coefficients.extend([1])
         legendre_polynomial = np.polynomial.legendre.Legendre(coefficients)
         radau_weights = [2 / (order - 1)**2]
-        radau_weights = np.array(radau_weights + [(1-x)/((order-1)**2 * (legendre_polynomial(x)**2)) for x in radau_points[1:]])/2
+        radau_weights = np.array(
+            radau_weights + [(1-x)/((order-1)**2 * (legendre_polynomial(x)**2)) for x in radau_points[1:]])/2
         self._quadrature_weights.update({order: radau_weights})
 
         butcher_array = np.zeros((order, order))
@@ -191,12 +257,14 @@ class Quadrature:
                 if j != i:
                     tem1 = 1/(butcher_points[i]-butcher_points[j])
                     for k in range(order):
-                        if k!=j and k!=i:
-                            tem1*= (x-butcher_points[k])/(butcher_points[i]-butcher_points[k])
+                        if k != j and k != i:
+                            tem1 *= (x-butcher_points[k]) / \
+                                (butcher_points[i]-butcher_points[k])
                     tem += tem1
-            differential_matrix.append(np.array([tem.subs(x,k) for k in butcher_points[:-1]]))
+            differential_matrix.append(
+                np.array([tem.subs(x, k) for k in butcher_points[:-1]]))
         differential_matrix = np.array(differential_matrix).transpose()
-        butcher_array[1:,:-1] = np.linalg.inv(np.array(differential_matrix[:,1:],dtype='float64'))
+        butcher_array[1:, :-1] = np.linalg.inv(np.array(differential_matrix[:, 1:], dtype='float64'))
 
         self._butcher_arrays.update({order: butcher_array})
 
@@ -219,6 +287,69 @@ class Quadrature:
         D_index_array.sort()
         self._D_index_arrays.update({order: D_index_array})
 
+        # print(f'x: {radau_points}')
+        # print(f'w: {radau_weights}, {sum(radau_weights)}')
+        # print(f"a: {butcher_array}")
+        # print(f"A: {D_matrix}")
+        # print(f"I: {A_matrix}")
+        # input()
+
+    def radau_differential_generator(self, order):
+        coefficients = [0] * (order - 2) + [1 , 1]
+        legendre_polynomial = np.polynomial.legendre.Legendre(coefficients)
+        self._polynomials.update({order: legendre_polynomial})
+
+        interior_points = legendre_polynomial.roots()
+        radau_points = np.append(interior_points, 1)
+        self._quadrature_points.update({order: radau_points})
+
+        coefficients = [0] * (order - 2)
+        coefficients.extend([1])
+        legendre_polynomial = np.polynomial.legendre.Legendre(coefficients)
+        radau_weights = [2 / (order - 1)**2]
+        radau_weights = np.array(
+            radau_weights + [(1-x)/((order-1)**2 * (legendre_polynomial(x)**2)) for x in radau_points[1:]])/2
+        self._quadrature_weights.update({order: radau_weights})
+
+        butcher_array = np.zeros((order, order))
+        butcher_points = self.quadrature_point(order, domain=[0, 1])
+        x = sym.Symbol('x')
+        differential_matrix = []
+        for i in range(len(butcher_points)):
+            tem = 0
+            for j in range(len(butcher_points)):
+                if j != i:
+                    tem1 = 1/(butcher_points[i]-butcher_points[j])
+                    for k in range(order):
+                        if k != j and k != i:
+                            tem1 *= (x-butcher_points[k]) / \
+                                (butcher_points[i]-butcher_points[k])
+                    tem += tem1
+            differential_matrix.append(
+                np.array([tem.subs(x, k) for k in butcher_points[:-1]]))
+        differential_matrix = np.array(differential_matrix).transpose()
+        butcher_array[1:, :] = np.negative(differential_matrix)
+
+        self._butcher_arrays.update({order: butcher_array})
+
+        D_matrix = self.butcher_array(order)[1:, :]
+        self._D_matrices.update({order: D_matrix})
+
+        A_right = np.zeros((order - 1, 1), dtype=int)
+        A_left = np.diag(1 * np.ones((order - 1), dtype=int))
+        A_matrix = np.hstack([A_left, A_right])
+        self._A_matrices.update({order: A_matrix})
+
+        A_index_array = np.array(range(A_matrix.size), dtype=int)
+        self._A_index_arrays.update({order: A_index_array})
+
+        D_num_row, D_num_col = D_matrix.shape
+        D_rows = np.array(range(D_num_row), dtype=int)
+        D_left = D_rows * D_num_col
+        D_right = D_rows * (D_num_col + 1) + 1
+        D_index_array = np.concatenate((D_left, D_right))
+        D_index_array.sort()
+        self._D_index_arrays.update({order: D_index_array})
 
         # print(f'x: {radau_points}')
         # print(f'w: {radau_weights}, {sum(radau_weights)}')
@@ -230,7 +361,7 @@ class Quadrature:
     def lobatto_generator(self, order):
         # LGL is by default one order lower
         num_interior_points = order - 1
-        
+
         coefficients = [0] * (num_interior_points)
         coefficients.append(1)
         # Legendre coefficients in order of increasing degree, i.e., (1, 2, 3) gives 1*P_0(x) + 2*P_1(x) + 3*P_2(x).
@@ -307,12 +438,56 @@ class Quadrature:
         D_index_array.sort()
         self._D_index_arrays.update({order: D_index_array})
 
-        # print(f'x: {lobatto_points}')
-        # print(f'w: {lobatto_weights}, {sum(lobatto_weights)}')
-        # print(f"a: {butcher_array}")
-        # print(f"A: {D_matrix}")
-        # print(f"I: {A_matrix}")
-        # input()
+    def lobatto_differential_generator(self, order):
+        num_interior_points = order - 1
+        coefficients = [0] * (num_interior_points)
+        coefficients.append(1)
+        legendre_polynomial = np.polynomial.legendre.Legendre(coefficients)
+        self._polynomials.update({order: legendre_polynomial})
 
+        interior_points = np.array(legendre_polynomial.deriv().roots(), dtype=float)
+        lobatto_points = np.concatenate(([-1], interior_points, [1]))
 
+        self._quadrature_points.update({order: lobatto_points})
 
+        lobatto_weights = np.array(
+            [1 / (order * (order - 1) * (legendre_polynomial(x)**2)) for x in lobatto_points])
+        self._quadrature_weights.update({order: lobatto_weights})
+
+        butcher_array = np.zeros((order, order))
+        butcher_points = self.quadrature_point(order, domain=[0, 1])
+        x = sym.Symbol('x')
+        differential_matrix = []
+        for i in range(len(butcher_points)):
+            tem = 0
+            for j in range(len(butcher_points)):
+                if j != i:
+                    tem1 = 1/(butcher_points[i]-butcher_points[j])
+                    for k in range(len(butcher_points)):
+                        if k != j and k != i:
+                            tem1 *= (x-butcher_points[k]) / \
+                                (butcher_points[i]-butcher_points[k])
+                    tem += tem1
+            differential_matrix.append(
+                np.array([tem.subs(x, k) for k in butcher_points]))
+        differential_matrix = np.array(differential_matrix, dtype=float).transpose()
+        butcher_array = np.negative(differential_matrix)
+
+        self._butcher_arrays.update({order: butcher_array})
+
+        D_matrix = self.butcher_array(order)
+        self._D_matrices.update({order: D_matrix})
+
+        A_matrix = np.diag(1 * np.ones((order), dtype=int))
+        self._A_matrices.update({order: A_matrix})
+
+        A_index_array = np.array(range(A_matrix.size), dtype=int)
+        self._A_index_arrays.update({order: A_index_array})
+
+        D_num_row, D_num_col = D_matrix.shape
+        D_rows = np.array(range(D_num_row), dtype=int)
+        D_left = D_rows * D_num_col
+        D_right = D_rows * (D_num_col + 1) + 1
+        D_index_array = np.concatenate((D_left, D_right))
+        D_index_array.sort()
+        self._D_index_arrays.update({order: D_index_array})

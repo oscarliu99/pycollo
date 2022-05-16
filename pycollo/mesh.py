@@ -249,6 +249,7 @@ class Mesh:
         section_boundaries = np.array(section_boundaries)
         section_lengths = np.diff(section_boundaries)
 
+        # Generate time series
         mesh = []
         for section_num, (sec_start, sec_end, sec_num_points) in enumerate(zip(section_boundaries[:-1], section_boundaries[1:], p.number_mesh_section_nodes)):
             points = self.quadrature.quadrature_point(
